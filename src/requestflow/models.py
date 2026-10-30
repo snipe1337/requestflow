@@ -1,7 +1,7 @@
 import asyncio
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable, Coroutine, Dict, Generic, Optional, TypeVar
+from typing import Any, Callable, Coroutine, Dict, Generic, Optional, TypeVar, Union
 from requestflow.priorities import Priority
 T = TypeVar('t')
 
@@ -14,7 +14,7 @@ class RequestItem(Generic[T]):
     kwargs: dict = field(default_factory=dict)
     priority: Priority = Priority.NORMAL
     effective_priority: Priority = Priority.NORMAL
-    guild_id: Optional[int] = None
+    guild_id: Optional[Union[int, str]] = None
     route_key: Optional[str] = None
     is_interaction: bool = False
     dedup_key: Optional[str] = None

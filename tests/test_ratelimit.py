@@ -29,6 +29,20 @@ async def test_interaction_bypass_pacing():
 
 
 @pytest.mark.asyncio
+async def test_gcra_burst_tolerance():
+    limiter = GlobalRateLimiter(rate=20.0, burst_allowance=3.0)
+    delays = []
+    for _ in range(4):
+        delays.append(await limiter.acquire())
+    assert delays == [0.0, 0.0, 0.0, 0.0]
+    t0 = time.monotonic()
+    d = await limiter.acquire()
+    elapsed = time.monotonic() - t0
+    assert d > 0.0
+    assert elapsed >= 0.03
+
+
+@pytest.mark.asyncio
 async def test_route_cooldown_independence():
     route_coord = RouteBucketCoordinator()
     route_a = 'POST /channels/1/messages'
@@ -74,7 +88,7 @@ async def test_dynamic_rate_update():
 
 @pytest.mark.asyncio
 async def test_limiter_cancellation_safety():
-    limiter = GlobalRateLimiter(rate=2.0)
+    limiter = GlobalRateLimiter(rate=2.0, burst_allowance=0.0)
 
     async def acquire_task():
         await limiter.acquire()

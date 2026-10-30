@@ -37,6 +37,10 @@ class GlobalRateLimiter:
         return self._ceiling
 
     @property
+    def burst_allowance(self) -> float:
+        return self._burst_tokens
+
+    @property
     def is_cooling_down(self) -> bool:
         return time.monotonic() < self._global_cooldown_until
 
@@ -73,11 +77,13 @@ class GlobalRateLimiter:
                     continue
             async with self._lock:
                 now = time.monotonic()
-                if now > self._tat:
-                    self._tat = now
-                dispatch_time = self._tat
-                self._tat = dispatch_time + self._emission_interval
-                delay = max(0.0, dispatch_time - now)
+                tat = max(now, self._tat)
+                if tat - now <= self._tau + 1e-9:
+                    delay = 0.0
+                    self._tat = tat + self._emission_interval
+                else:
+                    delay = max(0.0, (tat - self._tau) - now)
+                    self._tat = tat + self._emission_interval
             if delay > 0:
                 try:
                     await asyncio.sleep(delay)

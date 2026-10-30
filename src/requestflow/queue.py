@@ -1,7 +1,7 @@
 import asyncio
 import collections
 import time
-from typing import Callable, Deque, Dict, List, Optional, Set
+from typing import Callable, Deque, Dict, List, Optional, Set, Union
 from requestflow.exceptions import QueueFullError
 from requestflow.models import RequestItem
 from requestflow.policies import OverloadPolicy
@@ -19,12 +19,12 @@ class RequestQueue:
         self._size: int = 0
         self._sequence_counter: int = 0
         self._high_water_mark: int = 0
-        self._queues: Dict[Priority, Dict[Optional[int], Deque[RequestItem]]] = {
+        self._queues: Dict[Priority, Dict[Optional[Union[int, str]], Deque[RequestItem]]] = {
             p: collections.defaultdict(collections.deque) for p in Priority}
-        self._active_guild_keys: Dict[Priority, List[Optional[int]]] = {
+        self._active_guild_keys: Dict[Priority, List[Optional[Union[int, str]]]] = {
             p: [] for p in Priority}
         self._guild_indices: Dict[Priority, int] = {p: 0 for p in Priority}
-        self._guild_deficits: Dict[Optional[int],
+        self._guild_deficits: Dict[Optional[Union[int, str]],
                                    int] = collections.defaultdict(int)
         self._not_empty: asyncio.Event = asyncio.Event()
         self._not_full: asyncio.Event = asyncio.Event()
@@ -61,7 +61,7 @@ class RequestQueue:
         return counts
 
     def get_active_guild_count(self) -> int:
-        seen: Set[Optional[int]] = set()
+        seen: Set[Optional[Union[int, str]]] = set()
         for p in Priority:
             for guild_id, q in self._queues[p].items():
                 if len(q) > 0:
@@ -120,7 +120,7 @@ class RequestQueue:
         for p in reversed(Priority):
             guild_dict = self._queues[p]
             oldest_item: Optional[RequestItem] = None
-            target_guild: Optional[int] = None
+            target_guild: Optional[Union[int, str]] = None
             for g, q in guild_dict.items():
                 if q:
                     head = q[0]

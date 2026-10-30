@@ -64,7 +64,7 @@ class RequestFlow:
     async def update_rate(self, new_rate: float) -> None:
         await self.scheduler.rate_coordinator.global_limiter.update_rate(new_rate)
 
-    async def submit(self, operation: Callable[..., Coroutine[Any, Any, T]], *args: Any, priority: Union[Priority, str, int] = Priority.NORMAL, guild_id: Optional[int] = None, route_key: Optional[str] = None, is_interaction: bool = False, dedup_key: Optional[str] = None, timeout: Optional[float] = None, enqueue_timeout: Optional[float] = None, **kwargs: Any) -> T:
+    async def submit(self, operation: Callable[..., Coroutine[Any, Any, T]], *args: Any, priority: Union[Priority, str, int] = Priority.NORMAL, guild_id: Optional[Union[int, str]] = None, route_key: Optional[str] = None, is_interaction: bool = False, dedup_key: Optional[str] = None, timeout: Optional[float] = None, enqueue_timeout: Optional[float] = None, **kwargs: Any) -> T:
         parsed_priority = Priority.from_value(priority)
         if dedup_key is not None:
             async def run_single() -> T:

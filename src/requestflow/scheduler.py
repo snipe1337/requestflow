@@ -1,6 +1,6 @@
 import asyncio
 import time
-from typing import Any, Callable, Coroutine, List, Optional, Set, TypeVar
+from typing import Any, Callable, Coroutine, List, Optional, Set, TypeVar, Union
 from requestflow.exceptions import OperationCancelledError, QueueFullError, SchedulerClosedError, SchedulerNotStartedError
 from requestflow.executor import RequestExecutor
 from requestflow.metrics import RequestMetrics
@@ -79,7 +79,7 @@ class RequestScheduler:
             except Exception:
                 break
 
-    async def submit(self, operation: Callable[..., Coroutine[Any, Any, T]], *args: Any, priority: Priority = Priority.NORMAL, guild_id: Optional[int] = None, route_key: Optional[str] = None, is_interaction: bool = False, dedup_key: Optional[str] = None, timeout: Optional[float] = None, enqueue_timeout: Optional[float] = None, **kwargs: Any) -> T:
+    async def submit(self, operation: Callable[..., Coroutine[Any, Any, T]], *args: Any, priority: Priority = Priority.NORMAL, guild_id: Optional[Union[int, str]] = None, route_key: Optional[str] = None, is_interaction: bool = False, dedup_key: Optional[str] = None, timeout: Optional[float] = None, enqueue_timeout: Optional[float] = None, **kwargs: Any) -> T:
         if not self._is_started:
             raise SchedulerNotStartedError(
                 "scheduler has not been started. call 'await flow.start()'.")
