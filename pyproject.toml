@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "requestflow"
-version = "0.1.0"
+version = "0.1.1"
 description = "stop getting 429 ratelimited like an amateur. high-performance http scheduling and pacing for discord.py."
 readme = "README.md"
 requires-python = ">=3.11"

@@ -1,5 +1,11 @@
 # changelog
 
+## [0.1.1] - 2026-10-30
+
+### fixed
+- implement actual gcra burst tolerance eligibility condition in global rate limiter.
+- automatic major resource identifier extraction and cross-guild fairness resolution for intercepted discord.py routes.
+
 ## [0.1.0] - 2026-10-20
 
 ### initial release
