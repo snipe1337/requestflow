@@ -111,6 +111,7 @@ class DiscordHTTPAdapter:
         self._attached_clients: set = set()
         self._original_requests: dict = {}
         self._bot_map: dict = {}
+        self._prev_max_ratelimit_timeouts: dict = {}
 
     @classmethod
     def verify_compatibility(cls) -> None:
@@ -147,6 +148,9 @@ class DiscordHTTPAdapter:
                 f"http client {type(http_client).__name__} has no callable 'request' method.")
         if http_client in self._attached_clients:
             return
+        if hasattr(http_client, 'max_ratelimit_timeout'):
+            self._prev_max_ratelimit_timeouts[http_client] = http_client.max_ratelimit_timeout
+            http_client.max_ratelimit_timeout = 0.001
         self._bot_map[http_client] = client
         original_request = http_client.request
         self._original_requests[http_client] = original_request
@@ -227,44 +231,7 @@ class DiscordHTTPAdapter:
                 priority = Priority.NORMAL
 
             async def run_http() -> Any:
-                max_retries = 5
-                for attempt in range(max_retries):
-                    try:
-                        return await original_request(route, *args, **kwargs)
-                    except Exception as exc:
-                        rate_limited_cls = getattr(discord, 'RateLimited', None)
-                        http_exc_cls = getattr(discord, 'HTTPException', None)
-                        is_429 = False
-                        retry_after = 0.0
-                        is_global = False
-
-                        if rate_limited_cls and isinstance(exc, rate_limited_cls):
-                            is_429 = True
-                            retry_after = getattr(exc, 'retry_after', 0.0)
-                            is_global = bool(getattr(exc, 'is_global', False))
-                        elif http_exc_cls and isinstance(exc, http_exc_cls):
-                            if getattr(exc, 'status', None) == 429:
-                                is_429 = True
-                                retry_after = 1.0
-                                if hasattr(exc, 'response') and hasattr(exc.response, 'headers'):
-                                    headers = exc.response.headers
-                                    retry_after = float(headers.get('Retry-After', 1.0))
-                                    if str(headers.get('X-RateLimit-Global', '')).lower() == 'true':
-                                        is_global = True
-                        if not is_429 and (hasattr(exc, 'retry_after') or getattr(exc, 'status', None) == 429):
-                            is_429 = True
-                            retry_after = getattr(exc, 'retry_after', 1.0)
-                            is_global = bool(getattr(exc, 'is_global', False))
-
-                        if is_429 and retry_after > 0:
-                            self.scheduler.rate_coordinator.handle_429(
-                                retry_after, is_global=is_global, route_key=route_key)
-                            self.scheduler.metrics.record_429(is_global=is_global)
-                            if attempt < max_retries - 1:
-                                buffer = self.scheduler.rate_coordinator.route_coordinator.safety_buffer
-                                await asyncio.sleep(retry_after + buffer)
-                                continue
-                        raise
+                return await original_request(route, *args, **kwargs)
 
             if IN_REQUESTFLOW_EXECUTION.get():
                 return await run_http()
@@ -280,14 +247,19 @@ class DiscordHTTPAdapter:
             original = self._original_requests.pop(http_client, None)
             if original:
                 http_client.request = original
+            if http_client in self._prev_max_ratelimit_timeouts:
+                http_client.max_ratelimit_timeout = self._prev_max_ratelimit_timeouts.pop(http_client)
             self._attached_clients.remove(http_client)
 
     def detach_all(self) -> None:
         for http_client, original in list(self._original_requests.items()):
             http_client.request = original
+            if http_client in self._prev_max_ratelimit_timeouts:
+                http_client.max_ratelimit_timeout = self._prev_max_ratelimit_timeouts.pop(http_client)
         self._attached_clients.clear()
         self._original_requests.clear()
         self._bot_map.clear()
+        self._prev_max_ratelimit_timeouts.clear()
 
 
 def attach_to_bot(scheduler: RequestScheduler, bot: Any) -> DiscordHTTPAdapter:

@@ -16,10 +16,10 @@ class RequestScheduler:
     def __init__(self, max_pending: int = 5000, max_concurrency: int = 16, global_rate_limit: float = 40.0, rate_limit_ceiling: float = 50.0, burst_allowance: float = 5.0, allow_custom_ceiling: bool = False, overload_policy: OverloadPolicy = OverloadPolicy.REJECT, aging_threshold_seconds: float = 2.0, guild_quantum: int = 3, default_timeout: Optional[float] = None, default_retry_policy: Optional[RetryPolicy] = None, safety_buffer_seconds: float = 0.05) -> None:
         self.queue = RequestQueue(max_pending=max_pending, overload_policy=overload_policy,
                                   aging_threshold_seconds=aging_threshold_seconds, guild_quantum=guild_quantum)
-        self.executor = RequestExecutor(
-            max_concurrency=max_concurrency, default_timeout=default_timeout, default_retry_policy=default_retry_policy)
         self.rate_coordinator = RateLimitCoordinator(global_rate_limit=global_rate_limit, rate_limit_ceiling=rate_limit_ceiling,
                                                      burst_allowance=burst_allowance, allow_custom_ceiling=allow_custom_ceiling, safety_buffer_seconds=safety_buffer_seconds)
+        self.executor = RequestExecutor(
+            max_concurrency=max_concurrency, default_timeout=default_timeout, default_retry_policy=default_retry_policy, on_429=self._handle_executor_429, safety_buffer=safety_buffer_seconds)
         self.metrics = RequestMetrics()
         self.metrics.register_providers(get_currently_queued=lambda: self.queue.size, get_currently_executing=lambda: self.executor.currently_executing,
                                         get_high_water_mark=lambda: self.queue.high_water_mark, get_per_priority=self.queue.get_priority_counts, get_active_guilds=self.queue.get_active_guild_count)
@@ -37,6 +37,10 @@ class RequestScheduler:
     @property
     def is_closed(self) -> bool:
         return self._is_closed
+
+    def _handle_executor_429(self, retry_after: float, is_global: bool, route_key: Optional[str]) -> None:
+        self.rate_coordinator.handle_429(retry_after, is_global=is_global, route_key=route_key)
+        self.metrics.record_429(is_global=is_global)
 
     async def start(self) -> None:
         if self._is_closed:
