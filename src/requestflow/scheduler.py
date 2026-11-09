@@ -108,8 +108,9 @@ class RequestScheduler:
                 item = await self.queue.get(is_route_limited=self.rate_coordinator.route_coordinator.is_route_cooling_down)
                 if item.cancelled or (item.future and item.future.cancelled()):
                     continue
-                wait_time = await self.rate_coordinator.acquire(item.route_key, is_interaction=item.is_interaction)
-                self.metrics.record_rate_limit_wait(wait_time)
+                wait_time = await self.rate_coordinator.acquire_global(is_interaction=item.is_interaction)
+                if wait_time > 0:
+                    self.metrics.record_rate_limit_wait(wait_time)
                 task = asyncio.create_task(self._execute_item_task(
                     item), name=f'requestflow_exec_{item.sequence}')
                 self._in_flight_tasks.add(task)
@@ -124,6 +125,9 @@ class RequestScheduler:
             self.metrics.record_completion(
                 queue_wait_seconds=it.queue_wait_time, exec_duration_seconds=it.execution_duration, error=err)
         try:
+            route_wait = await self.rate_coordinator.acquire_route(item.route_key, is_interaction=item.is_interaction)
+            if route_wait > 0:
+                self.metrics.record_rate_limit_wait(route_wait)
             await self.executor.execute(item, on_complete=on_complete)
         except asyncio.CancelledError:
             pass

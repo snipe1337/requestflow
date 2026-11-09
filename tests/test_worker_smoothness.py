@@ -161,3 +161,52 @@ async def test_executor_coroutine_object_support():
         res = await flow.submit(work())
         assert res == 'direct_coro_done'
 
+
+@pytest.mark.asyncio
+async def test_route_rate_limit_does_not_block_other_routes_or_guilds():
+    """Verify that a rate-limited route in one channel does NOT block other channels or guilds."""
+    async with RequestFlow(safety_buffer_seconds=0.01) as flow:
+        route_cooling = 'POST /channels/1/messages'
+        route_ready_1 = 'POST /channels/2/messages'
+        route_ready_2 = 'POST /channels/3/messages'
+
+        # Put route 1 into cooldown for 0.4s
+        flow.scheduler.rate_coordinator.route_coordinator.update_route_cooldown(route_cooling, 0.4)
+
+        order_finished = []
+
+        async def op_cooling():
+            order_finished.append('cooling_done')
+            return 'cooling'
+
+        async def op_ready_1():
+            order_finished.append('ready_1_done')
+            return 'ready_1'
+
+        async def op_ready_2():
+            order_finished.append('ready_2_done')
+            return 'ready_2'
+
+        # Submit cooling item first in Guild 100
+        t_cooling = asyncio.create_task(flow.submit(op_cooling, guild_id=100, route_key=route_cooling))
+        # Submit ready item second in same Guild 100
+        t_ready_1 = asyncio.create_task(flow.submit(op_ready_1, guild_id=100, route_key=route_ready_1))
+        # Submit ready item in different Guild 200
+        t_ready_2 = asyncio.create_task(flow.submit(op_ready_2, guild_id=200, route_key=route_ready_2))
+
+        # Both ready items should finish very quickly (< 0.15s), NOT blocked by cooling route!
+        res_ready_1 = await asyncio.wait_for(t_ready_1, timeout=0.2)
+        res_ready_2 = await asyncio.wait_for(t_ready_2, timeout=0.2)
+
+        assert res_ready_1 == 'ready_1'
+        assert res_ready_2 == 'ready_2'
+        assert 'ready_1_done' in order_finished
+        assert 'ready_2_done' in order_finished
+        assert 'cooling_done' not in order_finished
+
+        # Cooling item finishes after cooldown
+        res_cooling = await asyncio.wait_for(t_cooling, timeout=0.8)
+        assert res_cooling == 'cooling'
+        assert 'cooling_done' in order_finished
+
+

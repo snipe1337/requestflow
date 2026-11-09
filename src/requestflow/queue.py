@@ -189,6 +189,7 @@ class RequestQueue:
                 idx = (start_index + i) % num_guilds
                 g = active_guilds[idx]
                 q = self._queues[p][g]
+                # Prune cancelled items at head of queue
                 while q:
                     head = q[0]
                     if head.cancelled or (head.future and head.future.cancelled()):
@@ -200,13 +201,29 @@ class RequestQueue:
                         break
                 if not q:
                     continue
-                head = q[0]
-                if is_route_limited and is_route_limited(head.route_key):
+
+                # Find first item in this guild whose route is not limited
+                selected_idx = None
+                for item_idx, candidate in enumerate(q):
+                    if candidate.cancelled or (candidate.future and candidate.future.cancelled()):
+                        continue
+                    if is_route_limited and is_route_limited(candidate.route_key):
+                        continue
+                    selected_idx = item_idx
+                    break
+
+                if selected_idx is None:
                     continue
+
                 if self._guild_deficits[g] <= 0:
                     self._guild_deficits[g] += self._guild_quantum
                 self._guild_deficits[g] -= 1
-                item = q.popleft()
+
+                if selected_idx == 0:
+                    item = q.popleft()
+                else:
+                    item = q[selected_idx]
+                    del q[selected_idx]
                 if len(q) == 0:
                     self._guild_deficits[g] = 0
                     if g in active_guilds:

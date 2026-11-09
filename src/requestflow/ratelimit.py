@@ -223,7 +223,7 @@ class RateLimitCoordinator:
             rate=global_rate_limit, ceiling=rate_limit_ceiling, burst_allowance=burst_allowance, allow_custom_ceiling=allow_custom_ceiling, safety_buffer_seconds=safety_buffer_seconds)
         self.route_coordinator = RouteBucketCoordinator(safety_buffer_seconds=safety_buffer_seconds)
 
-    async def acquire(self, route_key: Optional[str] = None, *, is_interaction: bool = False) -> float:
+    async def acquire_route(self, route_key: Optional[str], *, is_interaction: bool = False) -> float:
         total_delay = 0.0
         if not is_interaction and route_key:
             while self.route_coordinator.is_route_cooling_down(route_key):
@@ -233,8 +233,15 @@ class RateLimitCoordinator:
                     total_delay += delay
                 else:
                     break
-        global_delay = await self.global_limiter.acquire(is_interaction=is_interaction)
-        return total_delay + global_delay
+        return total_delay
+
+    async def acquire_global(self, *, is_interaction: bool = False) -> float:
+        return await self.global_limiter.acquire(is_interaction=is_interaction)
+
+    async def acquire(self, route_key: Optional[str] = None, *, is_interaction: bool = False) -> float:
+        route_delay = await self.acquire_route(route_key, is_interaction=is_interaction)
+        global_delay = await self.acquire_global(is_interaction=is_interaction)
+        return route_delay + global_delay
 
     def handle_429(self, retry_after: float, *, is_global: bool = False, route_key: Optional[str] = None) -> None:
         if is_global:
