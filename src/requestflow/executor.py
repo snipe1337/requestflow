@@ -33,17 +33,17 @@ class RequestExecutor:
                 on_complete(item, OperationCancelledError(
                     'operation cancelled before execution'))
             return
-        async with self._semaphore:
-            async with self._lock:
-                self._currently_executing += 1
-            item.execution_start_time = time.monotonic()
-            error: Optional[BaseException] = None
-            retry_policy = self._default_retry_policy
-            timeout = item.timeout if item.timeout is not None else self._default_timeout
-            attempts = 0
-            try:
-                while True:
-                    attempts += 1
+        item.execution_start_time = time.monotonic()
+        error: Optional[BaseException] = None
+        retry_policy = self._default_retry_policy
+        timeout = item.timeout if item.timeout is not None else self._default_timeout
+        attempts = 0
+        try:
+            while True:
+                attempts += 1
+                async with self._semaphore:
+                    async with self._lock:
+                        self._currently_executing += 1
                     try:
                         res = item.operation(*item.args, **item.kwargs)
                         if inspect.isawaitable(res):
@@ -56,6 +56,7 @@ class RequestExecutor:
                         item.completion_time = time.monotonic()
                         if item.future and (not item.future.done()):
                             item.future.set_result(result)
+                        error = None
                         break
                     except asyncio.TimeoutError as exc:
                         timeout_err = RequestTimeoutError(
@@ -74,16 +75,21 @@ class RequestExecutor:
                         raise
                     except BaseException as exc:
                         error = exc
-                        if retry_policy and retry_policy.is_retryable(exc) and (attempts <= retry_policy.max_retries):
-                            delay = retry_policy.compute_delay(attempts - 1)
-                            await asyncio.sleep(delay)
-                            continue
-                        item.completion_time = time.monotonic()
-                        if item.future and (not item.future.done()):
-                            item.future.set_exception(exc)
-                        break
-            finally:
-                async with self._lock:
-                    self._currently_executing -= 1
-                if on_complete:
-                    on_complete(item, error)
+                        if not (retry_policy and retry_policy.is_retryable(exc) and (attempts <= retry_policy.max_retries)):
+                            item.completion_time = time.monotonic()
+                            if item.future and (not item.future.done()):
+                                item.future.set_exception(exc)
+                            break
+                    finally:
+                        async with self._lock:
+                            self._currently_executing -= 1
+
+                if error is None or (item.future and item.future.done()):
+                    break
+
+                retry_after = getattr(error, 'retry_after', None)
+                delay = retry_policy.compute_delay(attempts - 1, retry_after=retry_after)
+                await asyncio.sleep(delay)
+        finally:
+            if on_complete:
+                on_complete(item, error)

@@ -124,7 +124,9 @@ class DiscordHTTPAdapter:
                 raise UnsupportedDiscordVersionError(
                     f'requestflow requires discord.py >= 2.0.0, but found {version_str}.', detected_version=version_str)
         except (ValueError, IndexError):
-            if not hasattr(discord.http, 'httpclient') or not hasattr(discord.http, 'route'):
+            http_client_cls = getattr(discord.http, 'HTTPClient', getattr(discord.http, 'httpclient', None))
+            route_cls = getattr(discord.http, 'Route', getattr(discord.http, 'route', None))
+            if not http_client_cls or not route_cls:
                 raise UnsupportedDiscordVersionError(
                     f'unsupported discord.py layout or version: {version_str}.', detected_version=version_str)
 
@@ -132,7 +134,8 @@ class DiscordHTTPAdapter:
         self.verify_compatibility()
         http_client = getattr(client, 'http', None)
         if http_client is None:
-            if isinstance(client, getattr(discord.http, 'httpclient', object)):
+            http_client_cls = getattr(discord.http, 'HTTPClient', getattr(discord.http, 'httpclient', None))
+            if http_client_cls and isinstance(client, http_client_cls):
                 http_client = client
             else:
                 raise IntegrationError(
@@ -165,22 +168,35 @@ class DiscordHTTPAdapter:
             async def run_http() -> Any:
                 try:
                     return await original_request(route, *args, **kwargs)
-                except getattr(discord, 'ratelimited', Exception) as exc:
-                    retry_after = getattr(exc, 'retry_after', 0.0)
-                    if retry_after > 0:
+                except Exception as exc:
+                    rate_limited_cls = getattr(discord, 'RateLimited', None)
+                    http_exc_cls = getattr(discord, 'HTTPException', None)
+                    is_429 = False
+                    retry_after = 0.0
+                    is_global = False
+
+                    if rate_limited_cls and isinstance(exc, rate_limited_cls):
+                        is_429 = True
+                        retry_after = getattr(exc, 'retry_after', 0.0)
+                        is_global = bool(getattr(exc, 'is_global', False))
+                    elif http_exc_cls and isinstance(exc, http_exc_cls):
+                        if getattr(exc, 'status', None) == 429:
+                            is_429 = True
+                            retry_after = 1.0
+                            if hasattr(exc, 'response') and hasattr(exc.response, 'headers'):
+                                headers = exc.response.headers
+                                retry_after = float(headers.get('Retry-After', 1.0))
+                                if str(headers.get('X-RateLimit-Global', '')).lower() == 'true':
+                                    is_global = True
+                    if not is_429 and (hasattr(exc, 'retry_after') or getattr(exc, 'status', None) == 429):
+                        is_429 = True
+                        retry_after = getattr(exc, 'retry_after', 1.0)
+                        is_global = bool(getattr(exc, 'is_global', False))
+
+                    if is_429 and retry_after > 0:
                         self.scheduler.rate_coordinator.handle_429(
-                            retry_after, is_global=False, route_key=route_key)
-                        self.scheduler.metrics.record_429(is_global=False)
-                    raise
-                except getattr(discord, 'httpexception', Exception) as exc:
-                    if getattr(exc, 'status', None) == 429:
-                        retry_after = 1.0
-                        if hasattr(exc, 'response') and hasattr(exc.response, 'headers'):
-                            retry_after = float(
-                                exc.response.headers.get('Retry-After', 1.0))
-                        self.scheduler.rate_coordinator.handle_429(
-                            retry_after, is_global=False, route_key=route_key)
-                        self.scheduler.metrics.record_429(is_global=False)
+                            retry_after, is_global=is_global, route_key=route_key)
+                        self.scheduler.metrics.record_429(is_global=is_global)
                     raise
             return await self.scheduler.submit(run_http, priority=priority, guild_id=guild_id, route_key=route_key, is_interaction=is_interaction)
         http_client.request = scheduled_request

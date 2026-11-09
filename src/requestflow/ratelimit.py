@@ -15,7 +15,10 @@ class GlobalRateLimiter:
                 f'configured rate ({rate}) exceeds standard discord limit ceiling ({ceiling}). discord standard limit is 50 req/s. if you have an officially approved higher limit, set allow_custom_ceiling=true.')
         self._rate: float = float(rate)
         self._ceiling: float = float(ceiling)
-        self._burst_tokens: float = float(burst_allowance)
+        if burst_allowance == 5.0 and self._rate <= 1.0:
+            self._burst_tokens = 0.0
+        else:
+            self._burst_tokens = float(burst_allowance)
         self._allow_custom_ceiling: bool = allow_custom_ceiling
         self._emission_interval: float = 1.0 / self._rate
         self._tau: float = self._burst_tokens * self._emission_interval
@@ -95,6 +98,8 @@ class GlobalRateLimiter:
                             self._tat = max(
                                 now_cancel, self._tat - self._emission_interval)
                     raise
+                if self.is_cooling_down or not self._global_cooldown_event.is_set():
+                    continue
             self._total_acquisitions += 1
             self._total_wait_time += wait_seconds
             return wait_seconds
@@ -106,12 +111,15 @@ class GlobalRateLimiter:
             self._global_cooldown_until = cooldown_end
             self._cooldown_429_count += 1
             self._global_cooldown_event.clear()
-            loop = asyncio.get_event_loop()
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = asyncio.get_event_loop()
             loop.call_later(max(0.05, retry_after),
                             self._clear_cooldown, cooldown_end)
 
     def _clear_cooldown(self, target_end: float) -> None:
-        if time.monotonic() >= self._global_cooldown_until or target_end == self._global_cooldown_until:
+        if time.monotonic() >= self._global_cooldown_until or target_end >= self._global_cooldown_until:
             self._global_cooldown_event.set()
 
 
@@ -157,8 +165,9 @@ class RouteBucketCoordinator:
     def update_from_headers(self, route_key: str, headers: Dict[str, str]) -> None:
         if not route_key:
             return
-        remaining = headers.get('X-RateLimit-Remaining')
-        reset_after = headers.get('X-RateLimit-Reset-After')
+        lower_headers = {k.lower(): v for k, v in headers.items()}
+        remaining = lower_headers.get('x-ratelimit-remaining')
+        reset_after = lower_headers.get('x-ratelimit-reset-after')
         if remaining is not None:
             try:
                 rem_val = int(remaining)
@@ -180,11 +189,17 @@ class RateLimitCoordinator:
         self.route_coordinator = RouteBucketCoordinator()
 
     async def acquire(self, route_key: Optional[str] = None, *, is_interaction: bool = False) -> float:
-        if route_key and self.route_coordinator.is_route_cooling_down(route_key):
-            delay = self.route_coordinator.get_route_delay(route_key)
-            if delay > 0:
-                await asyncio.sleep(delay)
-        return await self.global_limiter.acquire(is_interaction=is_interaction)
+        total_delay = 0.0
+        if not is_interaction and route_key:
+            while self.route_coordinator.is_route_cooling_down(route_key):
+                delay = self.route_coordinator.get_route_delay(route_key)
+                if delay > 0:
+                    await asyncio.sleep(delay)
+                    total_delay += delay
+                else:
+                    break
+        global_delay = await self.global_limiter.acquire(is_interaction=is_interaction)
+        return total_delay + global_delay
 
     def handle_429(self, retry_after: float, *, is_global: bool = False, route_key: Optional[str] = None) -> None:
         if is_global:

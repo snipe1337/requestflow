@@ -9,7 +9,7 @@ from requestflow.policies import OverloadPolicy, RetryPolicy
 from requestflow.priorities import Priority
 from requestflow.queue import RequestQueue
 from requestflow.ratelimit import RateLimitCoordinator
-T = TypeVar('t')
+T = TypeVar('T')
 
 
 class RequestScheduler:
@@ -70,14 +70,12 @@ class RequestScheduler:
         for t in list(self._in_flight_tasks):
             t.cancel()
         self._in_flight_tasks.clear()
-        while not self.queue.is_empty():
-            try:
-                item = await self.queue.get()
-                if item.future and (not item.future.done()):
-                    item.future.set_exception(SchedulerClosedError(
-                        'scheduler closed before item could be executed.'))
-            except Exception:
-                break
+        async with self.queue._lock:
+            remaining = self.queue.drain_all_locked()
+        for item in remaining:
+            if item.future and (not item.future.done()):
+                item.future.set_exception(SchedulerClosedError(
+                    'scheduler closed before item could be executed.'))
 
     async def submit(self, operation: Callable[..., Coroutine[Any, Any, T]], *args: Any, priority: Priority = Priority.NORMAL, guild_id: Optional[Union[int, str]] = None, route_key: Optional[str] = None, is_interaction: bool = False, dedup_key: Optional[str] = None, timeout: Optional[float] = None, enqueue_timeout: Optional[float] = None, **kwargs: Any) -> T:
         if not self._is_started:

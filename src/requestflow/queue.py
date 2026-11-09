@@ -69,35 +69,34 @@ class RequestQueue:
         return len(seen)
 
     async def put(self, item: RequestItem, timeout: Optional[float] = None) -> None:
-        async with self._lock:
-            if self._size >= self._max_pending:
+        start_wait = time.monotonic()
+        while True:
+            async with self._lock:
+                if self._size < self._max_pending:
+                    self._enqueue_item_locked(item)
+                    return
                 if self._overload_policy == OverloadPolicy.REJECT:
                     raise QueueFullError(
                         f'queue is full ({self._size}/{self._max_pending}). workload rejected.')
                 elif self._overload_policy == OverloadPolicy.DROP_OLDEST:
                     self._drop_oldest_locked()
+                    self._enqueue_item_locked(item)
+                    return
                 elif self._overload_policy == OverloadPolicy.WAIT:
                     self._not_full.clear()
-        if self._overload_policy == OverloadPolicy.WAIT and self._size >= self._max_pending:
-            start_wait = time.monotonic()
-            while True:
-                remaining_timeout = None
-                if timeout is not None:
-                    elapsed = time.monotonic() - start_wait
-                    remaining_timeout = timeout - elapsed
-                    if remaining_timeout <= 0:
-                        raise QueueFullError(
-                            'timed out waiting for queue capacity.')
-                try:
-                    await asyncio.wait_for(self._not_full.wait(), timeout=remaining_timeout)
-                except asyncio.TimeoutError:
+
+            remaining_timeout = None
+            if timeout is not None:
+                elapsed = time.monotonic() - start_wait
+                remaining_timeout = timeout - elapsed
+                if remaining_timeout <= 0:
                     raise QueueFullError(
                         'timed out waiting for queue capacity.')
-                async with self._lock:
-                    if self._size < self._max_pending:
-                        break
-        async with self._lock:
-            self._enqueue_item_locked(item)
+            try:
+                await asyncio.wait_for(self._not_full.wait(), timeout=remaining_timeout)
+            except asyncio.TimeoutError:
+                raise QueueFullError(
+                    'timed out waiting for queue capacity.')
 
     def _enqueue_item_locked(self, item: RequestItem) -> None:
         self._sequence_counter += 1
@@ -140,23 +139,23 @@ class RequestQueue:
                 return
 
     def remove_item(self, item: RequestItem) -> bool:
-        p = item.effective_priority
-        g = item.guild_id
-        guild_dict = self._queues[p]
-        q = guild_dict.get(g)
-        if q:
-            try:
-                q.remove(item)
-                self._size -= 1
-                if len(q) == 0 and g in self._active_guild_keys[p]:
-                    self._active_guild_keys[p].remove(g)
-                if self._size < self._max_pending:
-                    self._not_full.set()
-                if self._size == 0:
-                    self._not_empty.clear()
-                return True
-            except ValueError:
-                pass
+        for p in Priority:
+            guild_dict = self._queues[p]
+            g = item.guild_id
+            q = guild_dict.get(g)
+            if q and item in q:
+                try:
+                    q.remove(item)
+                    self._size -= 1
+                    if len(q) == 0 and g in self._active_guild_keys[p]:
+                        self._active_guild_keys[p].remove(g)
+                    if self._size < self._max_pending:
+                        self._not_full.set()
+                    if self._size == 0:
+                        self._not_empty.clear()
+                    return True
+                except ValueError:
+                    pass
         return False
 
     async def get(self, is_route_limited: Optional[Callable[[Optional[str]], bool]] = None) -> RequestItem:
@@ -171,7 +170,8 @@ class RequestQueue:
                     if self._size == 0:
                         self._not_empty.clear()
                     return item
-                self._not_empty.clear()
+                if self._size == 0:
+                    self._not_empty.clear()
             await asyncio.sleep(0.01)
 
     def _extract_next_item_locked(self, is_route_limited: Optional[Callable[[Optional[str]], bool]] = None) -> Optional[RequestItem]:
@@ -187,13 +187,18 @@ class RequestQueue:
                 idx = (start_index + i) % num_guilds
                 g = active_guilds[idx]
                 q = self._queues[p][g]
+                while q:
+                    head = q[0]
+                    if head.cancelled or (head.future and head.future.cancelled()):
+                        q.popleft()
+                        self._size -= 1
+                        if self._size < self._max_pending:
+                            self._not_full.set()
+                    else:
+                        break
                 if not q:
                     continue
                 head = q[0]
-                if head.cancelled or (head.future and head.future.cancelled()):
-                    q.popleft()
-                    self._size -= 1
-                    continue
                 if is_route_limited and is_route_limited(head.route_key):
                     continue
                 if self._guild_deficits[g] <= 0:
@@ -202,14 +207,15 @@ class RequestQueue:
                 item = q.popleft()
                 if len(q) == 0:
                     self._guild_deficits[g] = 0
-                    active_guilds.remove(g)
+                    if g in active_guilds:
+                        active_guilds.remove(g)
                     if active_guilds:
                         self._guild_indices[p] = idx % len(active_guilds)
                     else:
                         self._guild_indices[p] = 0
                 elif self._guild_deficits[g] <= 0:
                     self._guild_deficits[g] = 0
-                    self._guild_indices[p] = (idx + 1) % num_guilds
+                    self._guild_indices[p] = (idx + 1) % len(active_guilds)
                 else:
                     self._guild_indices[p] = idx
                 return item
@@ -218,7 +224,7 @@ class RequestQueue:
     def _apply_aging_locked(self, now: float) -> None:
         if self._aging_threshold <= 0:
             return
-        for p in [Priority.LOW, Priority.NORMAL, Priority.HIGH]:
+        for p in [Priority.HIGH, Priority.NORMAL, Priority.LOW]:
             guild_dict = self._queues[p]
             higher_priority = Priority(p.value - 1)
             for g, q in list(guild_dict.items()):
@@ -234,3 +240,17 @@ class RequestQueue:
                         self._active_guild_keys[higher_priority].append(g)
                 if len(q) == 0 and g in self._active_guild_keys[p]:
                     self._active_guild_keys[p].remove(g)
+
+    def drain_all_locked(self) -> List[RequestItem]:
+        items: List[RequestItem] = []
+        for p in Priority:
+            for g, q in self._queues[p].items():
+                while q:
+                    items.append(q.popleft())
+            self._active_guild_keys[p].clear()
+            self._guild_indices[p] = 0
+        self._guild_deficits.clear()
+        self._size = 0
+        self._not_empty.clear()
+        self._not_full.set()
+        return items

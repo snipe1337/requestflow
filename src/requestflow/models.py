@@ -3,7 +3,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Coroutine, Dict, Generic, Optional, TypeVar, Union
 from requestflow.priorities import Priority
-T = TypeVar('t')
+T = TypeVar('T')
 
 
 @dataclass
@@ -21,6 +21,10 @@ class RequestItem(Generic[T]):
     timeout: Optional[float] = None
     future: Optional[asyncio.Future] = None
     enqueue_time: float = 0.0
+    execution_start_time: Optional[float] = None
+    completion_time: Optional[float] = None
+    retries_left: int = 0
+    cancelled: bool = False
 
     def __post_init__(self) -> None:
         if self.future is None:
@@ -31,10 +35,6 @@ class RequestItem(Generic[T]):
             self.future = loop.create_future()
         if self.enqueue_time == 0.0:
             self.enqueue_time = time.monotonic()
-    execution_start_time: Optional[float] = None
-    completion_time: Optional[float] = None
-    retries_left: int = 0
-    cancelled: bool = False
 
     @property
     def queue_wait_time(self) -> float:
