@@ -49,7 +49,12 @@ class RequestExecutor:
                     async with self._lock:
                         self._currently_executing += 1
                     try:
-                        res = item.operation(*item.args, **item.kwargs)
+                        if inspect.isawaitable(item.operation):
+                            res = item.operation
+                        elif callable(item.operation):
+                            res = item.operation(*item.args, **item.kwargs)
+                        else:
+                            res = item.operation
                         if inspect.isawaitable(res):
                             if timeout is not None and timeout > 0:
                                 result = await asyncio.wait_for(res, timeout=timeout)

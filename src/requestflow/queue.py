@@ -178,7 +178,9 @@ class RequestQueue:
         now = time.monotonic()
         self._apply_aging_locked(now)
         for p in Priority:
-            active_guilds = self._active_guild_keys[p]
+            active_guilds = [g for g in self._active_guild_keys[p] if self._queues[p][g]]
+            if len(active_guilds) != len(self._active_guild_keys[p]):
+                self._active_guild_keys[p] = active_guilds
             if not active_guilds:
                 continue
             num_guilds = len(active_guilds)

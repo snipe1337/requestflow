@@ -103,3 +103,61 @@ async def test_global_429_header_pauses_limiter():
         assert flow.stats.rate_limit_429_count == 1
         assert flow.stats.cooldown_count_global == 1
 
+
+@pytest.mark.asyncio
+async def test_mode_a_managed_call_handles_429_transparently():
+    """Verify that Mode A (flow.submit) also benefits from transparent 429 auto-retry."""
+    import discord
+    async with RequestFlow() as flow:
+        mock_http = MagicMock()
+        mock_response = MagicMock()
+        mock_response.headers = {'Retry-After': '0.05'}
+        exc = discord.HTTPException(response=mock_response, message='Too Many Requests')
+        exc.status = 429
+
+        mock_http.request = AsyncMock(side_effect=[exc, {'status': 'mode_a_success'}])
+        original_mock = mock_http.request
+        mock_bot = MagicMock()
+        mock_bot.http = mock_http
+        flow.attach(mock_bot)
+
+        route = Route('POST', '/channels/{channel_id}/messages', channel_id=555)
+
+        async def send_msg():
+            return await mock_bot.http.request(route, json={'content': 'test'})
+
+        res = await flow.submit(send_msg)
+        assert res == {'status': 'mode_a_success'}
+        assert original_mock.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_route_buckets_empty_major_parameter_matching():
+    """Verify that candidate matching checks both with and without trailing colon."""
+    async with RequestFlow() as flow:
+        mock_bot = MagicMock()
+        mock_http = MagicMock()
+        mock_rl = MagicMock()
+        mock_rl.remaining = 0
+        mock_rl.is_expired.return_value = False
+        mock_rl.expires = None
+        mock_http._buckets = {'GET /users/@me:': mock_rl}
+        mock_http._bucket_hashes = {}
+        mock_bot.http = mock_http
+        flow.attach(mock_bot)
+
+        # Discord bucket checker should detect that the route is cooling down
+        is_limited = flow.scheduler.rate_coordinator.route_coordinator.is_route_cooling_down('GET /users/@me')
+        assert is_limited is True
+
+
+@pytest.mark.asyncio
+async def test_executor_coroutine_object_support():
+    """Verify that passing an instantiated coroutine object directly works seamlessly."""
+    async with RequestFlow() as flow:
+        async def work():
+            return 'direct_coro_done'
+
+        res = await flow.submit(work())
+        assert res == 'direct_coro_done'
+

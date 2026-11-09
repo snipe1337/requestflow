@@ -22,6 +22,7 @@ class RetryPolicy:
     max_delay: float = 10.0
     jitter: bool = True
     retryable_exceptions: Tuple[Type[BaseException], ...] = ()
+    safety_buffer: float = 0.05
 
     def is_retryable(self, exception: BaseException) -> bool:
         if not self.retryable_exceptions:
@@ -30,7 +31,7 @@ class RetryPolicy:
 
     def compute_delay(self, attempt: int, retry_after: Optional[float] = None) -> float:
         if retry_after is not None and retry_after > 0:
-            return retry_after
+            return retry_after + self.safety_buffer
         delay = self.base_delay * 2 ** attempt
         delay = min(delay, self.max_delay)
         if self.jitter:

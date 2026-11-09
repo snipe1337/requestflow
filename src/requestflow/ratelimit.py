@@ -75,8 +75,13 @@ class GlobalRateLimiter:
             return 0.0
         wait_seconds: float = 0.0
         while True:
-            if not self._global_cooldown_event.is_set():
-                await self._global_cooldown_event.wait()
+            while not self._global_cooldown_event.is_set():
+                try:
+                    await asyncio.wait_for(self._global_cooldown_event.wait(), timeout=1.0)
+                except asyncio.TimeoutError:
+                    if time.monotonic() >= self._global_cooldown_until:
+                        self._global_cooldown_event.set()
+                        break
             now = time.monotonic()
             if now < self._global_cooldown_until:
                 sleep_duration = self._global_cooldown_until - now
@@ -125,7 +130,7 @@ class GlobalRateLimiter:
                             self._clear_cooldown, cooldown_end)
 
     def _clear_cooldown(self, target_end: float) -> None:
-        if time.monotonic() >= self._global_cooldown_until or target_end >= self._global_cooldown_until:
+        if time.monotonic() + 0.001 >= self._global_cooldown_until or target_end >= self._global_cooldown_until:
             self._global_cooldown_event.set()
 
 
@@ -206,6 +211,8 @@ class RouteBucketCoordinator:
                         self.update_route_cooldown(route_key, reset_val)
                     except ValueError:
                         pass
+                elif rem_val > 0:
+                    self._cooldowns.pop(route_key, None)
             except ValueError:
                 pass
 

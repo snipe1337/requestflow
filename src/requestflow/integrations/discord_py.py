@@ -151,21 +151,31 @@ class DiscordHTTPAdapter:
         original_request = http_client.request
         self._original_requests[http_client] = original_request
 
+        def _get_bucket_candidates(r_key: str, bucket_hashes: dict) -> list:
+            parts = r_key.split(':', 1)
+            base = parts[0]
+            major = parts[1] if len(parts) > 1 else ''
+            h = bucket_hashes.get(base)
+            candidates = [
+                r_key,
+                f"{r_key}:" if not r_key.endswith(':') else r_key,
+                f"{base}:{major}",
+            ]
+            if h:
+                candidates.extend([f"{h}:{major}", h])
+            return candidates
+
         def check_discord_bucket(r_key: Optional[str]) -> bool:
             if not r_key:
                 return False
             try:
                 buckets = getattr(http_client, '_buckets', {})
                 bucket_hashes = getattr(http_client, '_bucket_hashes', {})
-                parts = r_key.split(':', 1)
-                base = parts[0]
-                major = parts[1] if len(parts) > 1 else ''
-                h = bucket_hashes.get(base)
-                lookup_key = f'{h}:{major}' if h else r_key
-                if lookup_key in buckets:
-                    rl = buckets[lookup_key]
-                    if rl.remaining <= 0 and not rl.is_expired():
-                        return True
+                for candidate in _get_bucket_candidates(r_key, bucket_hashes):
+                    if candidate in buckets:
+                        rl = buckets[candidate]
+                        if rl.remaining <= 0 and not rl.is_expired():
+                            return True
             except Exception:
                 pass
             return False
@@ -176,18 +186,17 @@ class DiscordHTTPAdapter:
             try:
                 buckets = getattr(http_client, '_buckets', {})
                 bucket_hashes = getattr(http_client, '_bucket_hashes', {})
-                parts = r_key.split(':', 1)
-                base = parts[0]
-                major = parts[1] if len(parts) > 1 else ''
-                h = bucket_hashes.get(base)
-                lookup_key = f'{h}:{major}' if h else r_key
-                if lookup_key in buckets:
-                    rl = buckets[lookup_key]
-                    if rl.expires is not None:
-                        loop = asyncio.get_running_loop()
-                        remaining = rl.expires - loop.time()
-                        if remaining > 0:
-                            return remaining + self.scheduler.rate_coordinator.route_coordinator.safety_buffer
+                safety = self.scheduler.rate_coordinator.route_coordinator.safety_buffer
+                for candidate in _get_bucket_candidates(r_key, bucket_hashes):
+                    if candidate in buckets:
+                        rl = buckets[candidate]
+                        if rl.remaining <= 0 and not rl.is_expired():
+                            if rl.expires is not None:
+                                loop = asyncio.get_running_loop()
+                                remaining = rl.expires - loop.time()
+                                if remaining > 0:
+                                    return remaining + safety
+                            return 0.05 + safety
             except Exception:
                 pass
             return 0.0
@@ -197,9 +206,6 @@ class DiscordHTTPAdapter:
 
         @functools.wraps(original_request)
         async def scheduled_request(route: Any, *args: Any, **kwargs: Any) -> Any:
-            if IN_REQUESTFLOW_EXECUTION.get():
-                return await original_request(route, *args, **kwargs)
-
             bot_client = self._bot_map.get(http_client)
             guild_id = extract_resource_id(route, bot_client)
             route_path = getattr(route, 'path', '')
@@ -259,6 +265,10 @@ class DiscordHTTPAdapter:
                                 await asyncio.sleep(retry_after + buffer)
                                 continue
                         raise
+
+            if IN_REQUESTFLOW_EXECUTION.get():
+                return await run_http()
+
             return await self.scheduler.submit(run_http, priority=priority, guild_id=guild_id, route_key=route_key, is_interaction=is_interaction)
         http_client.request = scheduled_request
         self._attached_clients.add(http_client)
