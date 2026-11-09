@@ -4,7 +4,7 @@ from typing import Dict, Optional, Tuple
 
 
 class GlobalRateLimiter:
-    def __init__(self, rate: float = 40.0, ceiling: float = 50.0, burst_allowance: float = 5.0, allow_custom_ceiling: bool = False) -> None:
+    def __init__(self, rate: float = 40.0, ceiling: float = 50.0, burst_allowance: float = 5.0, allow_custom_ceiling: bool = False, safety_buffer_seconds: float = 0.05) -> None:
         if rate <= 0:
             raise ValueError(f'global rate limit must be positive, got {rate}')
         if ceiling <= 0:
@@ -15,6 +15,7 @@ class GlobalRateLimiter:
                 f'configured rate ({rate}) exceeds standard discord limit ceiling ({ceiling}). discord standard limit is 50 req/s. if you have an officially approved higher limit, set allow_custom_ceiling=true.')
         self._rate: float = float(rate)
         self._ceiling: float = float(ceiling)
+        self._safety_buffer: float = max(0.0, float(safety_buffer_seconds))
         if burst_allowance == 5.0 and self._rate <= 1.0:
             self._burst_tokens = 0.0
         else:
@@ -42,6 +43,10 @@ class GlobalRateLimiter:
     @property
     def burst_allowance(self) -> float:
         return self._burst_tokens
+
+    @property
+    def safety_buffer(self) -> float:
+        return self._safety_buffer
 
     @property
     def is_cooling_down(self) -> bool:
@@ -106,7 +111,8 @@ class GlobalRateLimiter:
 
     def handle_global_429(self, retry_after: float) -> None:
         now = time.monotonic()
-        cooldown_end = now + max(0.05, retry_after)
+        effective_delay = max(0.05, retry_after) + self._safety_buffer
+        cooldown_end = now + effective_delay
         if cooldown_end > self._global_cooldown_until:
             self._global_cooldown_until = cooldown_end
             self._cooldown_429_count += 1
@@ -115,7 +121,7 @@ class GlobalRateLimiter:
                 loop = asyncio.get_running_loop()
             except RuntimeError:
                 loop = asyncio.get_event_loop()
-            loop.call_later(max(0.05, retry_after),
+            loop.call_later(effective_delay,
                             self._clear_cooldown, cooldown_end)
 
     def _clear_cooldown(self, target_end: float) -> None:
@@ -124,13 +130,18 @@ class GlobalRateLimiter:
 
 
 class RouteBucketCoordinator:
-    def __init__(self) -> None:
+    def __init__(self, safety_buffer_seconds: float = 0.05) -> None:
+        self._safety_buffer: float = max(0.0, float(safety_buffer_seconds))
         self._cooldowns: Dict[str, float] = {}
         self._remaining: Dict[str, int] = {}
         self._custom_checker: Optional[any] = None
         self._custom_delay_getter: Optional[any] = None
         self._lock: asyncio.Lock = asyncio.Lock()
         self._route_429_count: int = 0
+
+    @property
+    def safety_buffer(self) -> float:
+        return self._safety_buffer
 
     def register_custom_checker(self, checker: any, delay_getter: Optional[any] = None) -> None:
         self._custom_checker = checker
@@ -173,7 +184,7 @@ class RouteBucketCoordinator:
     def update_route_cooldown(self, route_key: str, retry_after: float) -> None:
         if not route_key or retry_after <= 0:
             return
-        cooldown_until = time.monotonic() + retry_after
+        cooldown_until = time.monotonic() + retry_after + self._safety_buffer
         existing = self._cooldowns.get(route_key, 0.0)
         if cooldown_until > existing:
             self._cooldowns[route_key] = cooldown_until
@@ -189,7 +200,7 @@ class RouteBucketCoordinator:
             try:
                 rem_val = int(remaining)
                 self._remaining[route_key] = rem_val
-                if rem_val == 0 and reset_after is not None:
+                if rem_val <= 0 and reset_after is not None:
                     try:
                         reset_val = float(reset_after)
                         self.update_route_cooldown(route_key, reset_val)
@@ -200,10 +211,10 @@ class RouteBucketCoordinator:
 
 
 class RateLimitCoordinator:
-    def __init__(self, global_rate_limit: float = 40.0, rate_limit_ceiling: float = 50.0, burst_allowance: float = 5.0, allow_custom_ceiling: bool = False) -> None:
+    def __init__(self, global_rate_limit: float = 40.0, rate_limit_ceiling: float = 50.0, burst_allowance: float = 5.0, allow_custom_ceiling: bool = False, safety_buffer_seconds: float = 0.05) -> None:
         self.global_limiter = GlobalRateLimiter(
-            rate=global_rate_limit, ceiling=rate_limit_ceiling, burst_allowance=burst_allowance, allow_custom_ceiling=allow_custom_ceiling)
-        self.route_coordinator = RouteBucketCoordinator()
+            rate=global_rate_limit, ceiling=rate_limit_ceiling, burst_allowance=burst_allowance, allow_custom_ceiling=allow_custom_ceiling, safety_buffer_seconds=safety_buffer_seconds)
+        self.route_coordinator = RouteBucketCoordinator(safety_buffer_seconds=safety_buffer_seconds)
 
     async def acquire(self, route_key: Optional[str] = None, *, is_interaction: bool = False) -> float:
         total_delay = 0.0

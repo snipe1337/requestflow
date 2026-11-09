@@ -11,11 +11,11 @@ T = TypeVar('T')
 
 
 class RequestFlow:
-    def __init__(self, bot: Optional[Any] = None, *, max_pending: int = 5000, max_concurrency: int = 16, global_rate_limit: float = 40.0, rate_limit_ceiling: float = 50.0, burst_allowance: float = 5.0, allow_custom_ceiling: bool = False, overload_policy: Union[OverloadPolicy, str] = OverloadPolicy.REJECT, aging_threshold_seconds: float = 2.0, guild_quantum: int = 3, default_timeout: Optional[float] = None, default_retry_policy: Optional[RetryPolicy] = None, auto_attach: bool = True) -> None:
+    def __init__(self, bot: Optional[Any] = None, *, max_pending: int = 5000, max_concurrency: int = 16, global_rate_limit: float = 40.0, rate_limit_ceiling: float = 50.0, burst_allowance: float = 5.0, allow_custom_ceiling: bool = False, overload_policy: Union[OverloadPolicy, str] = OverloadPolicy.REJECT, aging_threshold_seconds: float = 2.0, guild_quantum: int = 3, default_timeout: Optional[float] = None, default_retry_policy: Optional[RetryPolicy] = None, safety_buffer_seconds: float = 0.05, auto_attach: bool = True) -> None:
         if isinstance(overload_policy, str):
             overload_policy = OverloadPolicy(overload_policy.lower())
         self.scheduler = RequestScheduler(max_pending=max_pending, max_concurrency=max_concurrency, global_rate_limit=global_rate_limit, rate_limit_ceiling=rate_limit_ceiling, burst_allowance=burst_allowance,
-                                          allow_custom_ceiling=allow_custom_ceiling, overload_policy=overload_policy, aging_threshold_seconds=aging_threshold_seconds, guild_quantum=guild_quantum, default_timeout=default_timeout, default_retry_policy=default_retry_policy)
+                                          allow_custom_ceiling=allow_custom_ceiling, overload_policy=overload_policy, aging_threshold_seconds=aging_threshold_seconds, guild_quantum=guild_quantum, default_timeout=default_timeout, default_retry_policy=default_retry_policy, safety_buffer_seconds=safety_buffer_seconds)
         self._bot: Optional[Any] = bot
         self._auto_attach: bool = auto_attach
         self._adapter: DiscordHTTPAdapter = DiscordHTTPAdapter(self.scheduler)

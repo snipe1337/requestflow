@@ -185,7 +185,9 @@ class DiscordHTTPAdapter:
                     rl = buckets[lookup_key]
                     if rl.expires is not None:
                         loop = asyncio.get_running_loop()
-                        return max(0.0, rl.expires - loop.time())
+                        remaining = rl.expires - loop.time()
+                        if remaining > 0:
+                            return remaining + self.scheduler.rate_coordinator.route_coordinator.safety_buffer
             except Exception:
                 pass
             return 0.0
@@ -253,7 +255,8 @@ class DiscordHTTPAdapter:
                                 retry_after, is_global=is_global, route_key=route_key)
                             self.scheduler.metrics.record_429(is_global=is_global)
                             if attempt < max_retries - 1:
-                                await asyncio.sleep(retry_after)
+                                buffer = self.scheduler.rate_coordinator.route_coordinator.safety_buffer
+                                await asyncio.sleep(retry_after + buffer)
                                 continue
                         raise
             return await self.scheduler.submit(run_http, priority=priority, guild_id=guild_id, route_key=route_key, is_interaction=is_interaction)
