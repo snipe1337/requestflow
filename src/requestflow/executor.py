@@ -1,10 +1,13 @@
 import asyncio
+import contextvars
 import inspect
 import time
 from typing import Any, Callable, Coroutine, Optional
 from requestflow.exceptions import OperationCancelledError, RequestTimeoutError
 from requestflow.models import RequestItem
 from requestflow.policies import RetryPolicy
+
+IN_REQUESTFLOW_EXECUTION: contextvars.ContextVar[bool] = contextvars.ContextVar('IN_REQUESTFLOW_EXECUTION', default=False)
 
 
 class RequestExecutor:
@@ -38,6 +41,7 @@ class RequestExecutor:
         retry_policy = self._default_retry_policy
         timeout = item.timeout if item.timeout is not None else self._default_timeout
         attempts = 0
+        token = IN_REQUESTFLOW_EXECUTION.set(True)
         try:
             while True:
                 attempts += 1
@@ -91,5 +95,6 @@ class RequestExecutor:
                 delay = retry_policy.compute_delay(attempts - 1, retry_after=retry_after)
                 await asyncio.sleep(delay)
         finally:
+            IN_REQUESTFLOW_EXECUTION.reset(token)
             if on_complete:
                 on_complete(item, error)

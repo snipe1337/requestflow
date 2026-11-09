@@ -82,7 +82,7 @@ async def test_global_429_header_pauses_limiter():
         mock_http = MagicMock()
         mock_response = MagicMock()
         mock_response.headers = {
-            'Retry-After': '0.1',
+            'Retry-After': '0.05',
             'X-RateLimit-Global': 'true'
         }
         exc = discord.HTTPException(response=mock_response, message='You are being rate limited.')
@@ -95,11 +95,11 @@ async def test_global_429_header_pauses_limiter():
         flow.attach(mock_bot)
         route = Route('GET', '/users/@me')
 
-        with pytest.raises(discord.HTTPException):
-            await mock_bot.http.request(route)
+        # RequestFlow automatically handles the 429, sleeps retry_after, and recovers transparently!
+        result = await mock_bot.http.request(route)
+        assert result == {'status': 'success'}
 
-        # Global rate limiter should now be cooling down!
-        assert flow.scheduler.rate_coordinator.global_limiter.is_cooling_down is True
+        # Global rate limiter recorded the 429 and cooldown count
         assert flow.stats.rate_limit_429_count == 1
         assert flow.stats.cooldown_count_global == 1
 

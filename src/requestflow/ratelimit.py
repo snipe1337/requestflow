@@ -127,31 +127,48 @@ class RouteBucketCoordinator:
     def __init__(self) -> None:
         self._cooldowns: Dict[str, float] = {}
         self._remaining: Dict[str, int] = {}
+        self._custom_checker: Optional[any] = None
+        self._custom_delay_getter: Optional[any] = None
         self._lock: asyncio.Lock = asyncio.Lock()
         self._route_429_count: int = 0
+
+    def register_custom_checker(self, checker: any, delay_getter: Optional[any] = None) -> None:
+        self._custom_checker = checker
+        self._custom_delay_getter = delay_getter
 
     def is_route_cooling_down(self, route_key: Optional[str]) -> bool:
         if not route_key:
             return False
         expiry = self._cooldowns.get(route_key)
-        if expiry is None:
-            return False
-        if time.monotonic() >= expiry:
+        if expiry is not None:
+            if time.monotonic() < expiry:
+                return True
             self._cooldowns.pop(route_key, None)
-            return False
-        return True
+        if self._custom_checker:
+            try:
+                if self._custom_checker(route_key):
+                    return True
+            except Exception:
+                pass
+        return False
 
     def get_route_delay(self, route_key: Optional[str]) -> float:
         if not route_key:
             return 0.0
         expiry = self._cooldowns.get(route_key)
-        if expiry is None:
-            return 0.0
-        remaining = expiry - time.monotonic()
-        if remaining <= 0:
+        if expiry is not None:
+            remaining = expiry - time.monotonic()
+            if remaining > 0:
+                return remaining
             self._cooldowns.pop(route_key, None)
-            return 0.0
-        return remaining
+        if self._custom_delay_getter:
+            try:
+                delay = self._custom_delay_getter(route_key)
+                if delay > 0:
+                    return delay
+            except Exception:
+                pass
+        return 0.0
 
     def update_route_cooldown(self, route_key: str, retry_after: float) -> None:
         if not route_key or retry_after <= 0:
